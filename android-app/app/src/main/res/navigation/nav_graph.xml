@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_host"
+    app:startDestination="@id/videoFragment">
+
+<!--    <fragment-->
+<!--        android:id="@+id/blankFragment"-->
+<!--        android:name="com.example.vrcapture.fragments.BlankFragment"-->
+<!--        android:label="fragment_blank"-->
+<!--        tools:layout="@layout/fragment_blank" />-->
+
+    <fragment
+        android:id="@+id/videoFragment"
+        android:name="com.example.vrcapture.fragments.VideoFragment"
+        android:label="fragment_video"
+        tools:layout="@layout/fragment_video" >
+<!--        <action-->
+<!--            android:id="@+id/action_video_to_blank"-->
+<!--            app:destination="@id/blankFragment"-->
+<!--            app:enterAnim="@anim/nav_default_enter_anim"-->
+<!--            app:exitAnim="@anim/nav_default_exit_anim"-->
+<!--            app:launchSingleTop="true"-->
+<!--            app:popEnterAnim="@anim/nav_default_pop_enter_anim"-->
+<!--            app:popExitAnim="@anim/nav_default_pop_exit_anim"-->
+<!--            app:popUpTo="@+id/nav_host"-->
+<!--            app:popUpToInclusive="true" />-->
+    </fragment>
+</navigation>
