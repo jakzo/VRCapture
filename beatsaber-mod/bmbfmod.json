@@ -1,0 +1,29 @@
+{
+  "id": "vrcapture",
+  "name": "VRCapture",
+  "version": "0.1.0",
+  "author": "jakzo",
+  "description": [
+    "Automatically starts the VRCapture app recording when playing a song."
+  ],
+  "category": "Gameplay",
+  "gameVersion": "1.16.4",
+  "platform": "Quest",
+  "components": [
+    {
+      "type": "HookMod",
+      "installAction": {
+        "installLibraryFile": "libvrcapture.so"
+      },
+      "uninstallAction": {
+        "removeLibraryFile": "libvrcapture.so"
+      }
+    },
+    {
+      "type": "HookModLibrary",
+      "installAction": {
+        "installLibraryFile": "libbeatsaber-hook_1_0_10.so"
+      }
+    }
+  ]
+}

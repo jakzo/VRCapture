@@ -8,7 +8,9 @@ import android.content.res.Configuration
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.provider.MediaStore
+import android.speech.tts.TextToSpeech
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.View
@@ -30,10 +32,15 @@ import io.ktor.routing.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import java.io.File
+import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
+// TODO: Base name off the song name
+class Recording {
+    val filename = System.currentTimeMillis().toString()
+}
 
 @SuppressLint("RestrictedApi")
 class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video) {
@@ -51,6 +58,7 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
     private var cameraProvider: ProcessCameraProvider? = null
     private var preview: Preview? = null
     private var videoCapture: VideoCapture? = null
+    private var imageCapture: ImageCapture? = null
 
     private var server: NettyApplicationEngine? = null
 
@@ -59,8 +67,8 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
     // Selector showing which camera is selected (front or back)
     private var lensFacing = CameraSelector.DEFAULT_BACK_CAMERA
 
-    // Selector showing is recording currently active
-    private var isRecording = false
+    private var recording: Recording? = null
+    private var photoDelay: Runnable? = null
     private val animateRecord by lazy {
         ObjectAnimator.ofFloat(binding.btnRecordVideo, View.ALPHA, 1f, 0.5f).apply {
             repeatMode = ObjectAnimator.REVERSE
@@ -68,6 +76,8 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
             doOnCancel { binding.btnRecordVideo.alpha = 1f }
         }
     }
+
+    private var tts: TextToSpeech? = null
 
     // A lazy instance of the current fragment's view binding
     override val binding: FragmentVideoBinding by lazy { FragmentVideoBinding.inflate(layoutInflater) }
@@ -86,6 +96,7 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
             if (displayId == this@VideoFragment.displayId) {
                 preview?.targetRotation = view.display.rotation
                 videoCapture?.setTargetRotation(view.display.rotation)
+                imageCapture?.targetRotation = view.display.rotation
             }
         } ?: Unit
     }
@@ -107,13 +118,19 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
                     displayManager.unregisterDisplayListener(displayListener)
             })
             binding.btnRecordVideo.setOnClickListener {
-                if (!isRecording) {
+                if (recording == null) {
                     startRecording()
                 } else {
                     stopRecording()
                 }
             }
             btnSwitchCamera.setOnClickListener { toggleCamera() }
+
+            tts = TextToSpeech(requireContext()) { status ->
+                if (status != TextToSpeech.ERROR) {
+                    tts?.language = Locale.UK
+                }
+            }
         }
     }
 
@@ -168,20 +185,16 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
         cameraProviderFuture.addListener({
             cameraProvider = cameraProviderFuture.get()
 
-            // The display information
             val metrics = DisplayMetrics().also { viewFinder.display.getRealMetrics(it) }
-            // The ratio for the output image and preview
             val aspectRatio = aspectRatio(metrics.widthPixels, metrics.heightPixels)
-            // The display rotation
             val rotation = viewFinder.display.rotation
 
             val localCameraProvider = cameraProvider
                 ?: throw IllegalStateException("camera initialization failed")
 
-            // The Configuration of camera preview
             preview = Preview.Builder()
-                .setTargetAspectRatio(aspectRatio) // set the camera aspect ratio
-                .setTargetRotation(rotation) // set the camera rotation
+                .setTargetAspectRatio(aspectRatio)
+                .setTargetRotation(rotation)
                 .build()
 
             val videoCaptureConfig = VideoCapture.Builder().apply {
@@ -189,23 +202,26 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
                 setBitRate(16 * 1024 * 1024)
                 setTargetAspectRatio(AspectRatio.RATIO_16_9);
             }
-            // The Configuration of video capture
             videoCapture = VideoCapture.Builder
                 .fromConfig(videoCaptureConfig.useCaseConfig)
+                .setTargetRotation(rotation)
+                .build()
+
+            imageCapture = ImageCapture.Builder()
+                .setTargetRotation(rotation)
                 .build()
 
             localCameraProvider.unbindAll() // unbind the use-cases before rebinding them
 
             try {
-                // Bind all use cases to the camera with lifecycle
                 camera = localCameraProvider.bindToLifecycle(
-                    viewLifecycleOwner, // current lifecycle owner
-                    lensFacing, // either front or back facing
-                    preview, // camera preview use case
-                    videoCapture, // video capture use case
+                    viewLifecycleOwner,
+                    lensFacing,
+                    preview,
+                    videoCapture,
+                    imageCapture
                 )
 
-                // Attach the viewfinder's surface provider to preview use case
                 preview?.setSurfaceProvider(viewFinder.surfaceProvider)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to bind use cases", e)
@@ -232,10 +248,57 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
         return videoCapture ?: throw IllegalStateException("camera initialization failed")
     }
 
-    private fun getOutputOptions(): VideoCapture.OutputFileOptions {
+    private fun getImageCapture(): ImageCapture {
+        return imageCapture ?: throw IllegalStateException("camera initialization failed")
+    }
+
+    private fun getImageOutputOptions(recording: Recording): ImageCapture.OutputFileOptions {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val contentValues = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, System.currentTimeMillis())
+                put(MediaStore.MediaColumns.DISPLAY_NAME, recording.filename)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, outputDirectory)
+            }
+
+            requireContext().contentResolver.run {
+                val contentUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+
+                ImageCapture.OutputFileOptions.Builder(this, contentUri, contentValues)
+            }
+        } else {
+            File(outputDirectory).mkdirs()
+            val file = File("$outputDirectory/${recording.filename}.jpg")
+
+            ImageCapture.OutputFileOptions.Builder(file)
+        }.build()
+    }
+
+    private fun takePhoto(recording: Recording) {
+        getImageCapture().takePicture(
+                getImageOutputOptions(recording),
+                requireContext().mainExecutor(),
+                object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                        outputFileResults.savedUri
+                                ?.let { uri ->
+                                    Log.d(TAG, "Image saved in $uri")
+                                }
+                    }
+
+                    override fun onError(exception: ImageCaptureException) {
+                        val msg = "Video capture failed: ${exception.message}"
+                        Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show()
+                        Log.e(TAG, msg)
+                        exception.printStackTrace()
+                    }
+                }
+        )
+    }
+
+    private fun getVideoOutputOptions(recording: Recording): VideoCapture.OutputFileOptions {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, recording.filename)
                 put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, outputDirectory)
             }
@@ -247,7 +310,7 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
             }
         } else {
             File(outputDirectory).mkdirs()
-            val file = File("$outputDirectory/${System.currentTimeMillis()}.mp4")
+            val file = File("$outputDirectory/${recording.filename}.mp4")
 
             VideoCapture.OutputFileOptions.Builder(file)
         }.build()
@@ -255,12 +318,18 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
     }
 
     private fun startRecording() {
-        if (isRecording) return
-        isRecording = true
+        if (recording != null) return
+        val rec = Recording()
+        recording = rec
+
+        if (photoDelay != null) {
+            Handler().removeCallbacks(photoDelay!!);
+            photoDelay = null
+        }
 
         animateRecord.start()
         getVideoCapture().startRecording(
-            getOutputOptions(),
+            getVideoOutputOptions(rec),
             requireContext().mainExecutor(),
             object : VideoCapture.OnVideoSavedCallback {
                 override fun onVideoSaved(outputFileResults: VideoCapture.OutputFileResults) {
@@ -281,11 +350,20 @@ class VideoFragment : BaseFragment<FragmentVideoBinding>(R.layout.fragment_video
     }
 
     private fun stopRecording() {
-        if (!isRecording) return
-        isRecording = false
+        if (recording == null) return
+        val rec = recording!!
+        recording = null
 
         animateRecord.cancel()
         getVideoCapture().stopRecording()
+
+        tts?.speak("Taking photo in 10 seconds", TextToSpeech.QUEUE_FLUSH, null, "photo_after_delay")
+        photoDelay = Runnable {
+            photoDelay = null
+            takePhoto(rec)
+            tts?.speak("Photo taken", TextToSpeech.QUEUE_FLUSH, null, "photo_taken")
+        }
+        Handler().postDelayed(photoDelay, 10 * 1000)
     }
 
     override fun onPermissionGranted() {
